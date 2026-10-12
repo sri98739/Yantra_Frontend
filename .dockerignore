@@ -1,0 +1,9 @@
+.git
+.gitignore
+.dockerignore
+Dockerfile
+Jenkinsfile
+k8s
+README.md
+node_modules
+*.log
