@@ -1,15 +1,15 @@
-// Yantra frontend CI/CD: check -> build Docker image -> smoke test -> push -> deploy to Kubernetes.
+// Yantra frontend CI/CD: check -> build Docker image -> smoke test -> push -> run the container with Docker.
 //
-// Runs on a Windows Jenkins agent (steps use PowerShell). The agent needs docker and kubectl on PATH.
-// Jenkins credentials to create (Manage Jenkins -> Credentials):
+// Runs on a Windows Jenkins agent (steps use PowerShell). The agent needs docker on PATH.
+// Jenkins credentials (Manage Jenkins -> Credentials), only needed when REGISTRY is set:
 //   - "docker-registry" : Username with password for your registry (e.g. Docker Hub user + access token)
-//   - "kubeconfig"      : Secret file containing the kubeconfig for the target cluster
 pipeline {
   agent any
 
   parameters {
     string(name: 'REGISTRY', defaultValue: '', description: 'Registry host + namespace, e.g. docker.io/yourname or ghcr.io/yourname. Leave empty to build locally without pushing.')
-    booleanParam(name: 'DEPLOY', defaultValue: true, description: 'Deploy to Kubernetes after a successful build')
+    booleanParam(name: 'DEPLOY', defaultValue: true, description: 'Run the new image as a container on this machine after a successful build')
+    string(name: 'HOST_PORT', defaultValue: '3000', description: 'Port on this machine to publish the app on')
   }
 
   environment {
@@ -102,23 +102,29 @@ pipeline {
       }
     }
 
-    stage('Deploy to Kubernetes') {
+    stage('Deploy with Docker') {
       when { expression { params.DEPLOY } }
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-          powershell '''
-            $ErrorActionPreference = 'Continue'
-            kubectl apply -f k8s/namespace.yaml
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            kubectl apply -f k8s/service.yaml
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            # Deploy the exact image this build produced.
-            (Get-Content k8s/deployment.yaml) -replace "image: ${env:APP}:latest", "image: ${env:IMAGE}:${env:TAG}" | kubectl apply -f -
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            kubectl -n yantra rollout status "deployment/${env:APP}" --timeout=120s
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          '''
-        }
+        powershell '''
+          $ErrorActionPreference = 'Continue'
+          # Replace the previously deployed container (if any) with the image this build produced.
+          docker rm -f $env:APP 2>$null
+          docker run -d --name $env:APP --restart unless-stopped -p "${env:HOST_PORT}:${env:PORT}" "${env:IMAGE}:${env:TAG}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          for ($i = 0; $i -lt 15; $i++) {
+            try {
+              $res = Invoke-WebRequest -UseBasicParsing "http://localhost:${env:HOST_PORT}/healthz" -TimeoutSec 3
+              if ($res.Content -eq 'ok') {
+                Write-Output "Deployed: http://localhost:${env:HOST_PORT}/"
+                exit 0
+              }
+            } catch { }
+            Start-Sleep -Seconds 2
+          }
+          Write-Output 'Deployed container did not become healthy'
+          docker logs $env:APP
+          exit 1
+        '''
       }
     }
   }
