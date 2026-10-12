@@ -15,6 +15,8 @@ pipeline {
   environment {
     APP = 'yantra-frontend'
     PORT = '8080'
+    // params.HOST_PORT is empty on the first build after the parameter is added, so fall back to the default.
+    HOST_PORT = "${params.HOST_PORT ?: '3000'}"
     TAG = "${env.BUILD_NUMBER}"
     IMAGE = "${params.REGISTRY ? params.REGISTRY + '/' : ''}yantra-frontend"
   }
